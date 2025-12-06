@@ -4,7 +4,7 @@ replicaCount: 1
 
 image:
   repository: registry.baidubce.com/cprom-stack-dev/langfuse-demo
-  tag: "2025120616"
+  tag: "20251206193634"
   pullPolicy: IfNotPresent
   # imagePullSecrets: 
   #   - name: bce-regcred
@@ -13,8 +13,8 @@ nameOverride: ""
 fullnameOverride: ""
 
 service:
-  type: ClusterIP
-  port: 80
+  type: NodePort
+  port: 8000
   targetPort: 8000
 
 ingress:
