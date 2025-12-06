@@ -1,0 +1,18 @@
+1. Get the application URL by running these commands:
+
+{{- if .Values.ingress.enabled }}
+  Ingress host:
+  http{{ if (index .Values.ingress.tls 0) }}s{{ end }}://{{ (index .Values.ingress.hosts 0).host }}/
+{{- else }}
+  Port-forward to your Service:
+  kubectl port-forward svc/{{ include "langfuse-demo.fullname" . }} 8080:{{ .Values.service.port }}
+  Then access:
+  http://127.0.0.1:8080/healthz
+  http://127.0.0.1:8080/chat
+{{- end }}
+
+2. Example request:
+  curl -X POST http://127.0.0.1:8080/chat \
+    -H 'Content-Type: application/json' \
+    -d '{"query":"你好"}'
+

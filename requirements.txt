@@ -1,0 +1,24 @@
+# LangChain 核心
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-community>=0.3.0  # 包含 AgentExecutor 等工具
+
+# 模型集成（至少选择一个）
+langchain-openai>=0.2.0  # OpenAI 模型支持
+langchain-deepseek-official>=0.1.0  # DeepSeek 模型支持
+
+# Langfuse 监控
+langfuse>=3.0.0
+
+# 环境变量管理
+python-dotenv>=1.0.0  # 用于加载 .env 文件
+
+# 工具依赖
+requests>=2.31.0
+
+# 可选：LangGraph（用于复杂 Agent）
+langgraph>=0.2.0
+
+# API server for k8s deployment
+fastapi>=0.110.0
+uvicorn>=0.24.0

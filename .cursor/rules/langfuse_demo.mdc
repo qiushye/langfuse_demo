@@ -1,0 +1,608 @@
+# LangChain Agent + Langfuse 监控开发规则
+
+## 项目概述
+本项目使用 LangChain 作为 Agent 底座，实现意图识别、工具调用、LLM 调用等功能，并使用 Langfuse 对 Agent 对话的完整链路进行监测。
+
+## 核心依赖
+- `langchain`: Agent 框架基础
+- `langchain-openai`: OpenAI 模型集成（可选）
+- `langchain-deepseek-official`: DeepSeek 模型集成（可选）
+- `langfuse`: LLM 应用可观测性平台
+- `langfuse[langchain]`: LangChain 集成支持
+
+## LangChain Agent 开发规范
+
+### Agent 架构设计
+1. **意图识别模块**
+   - 使用独立的 LLM 调用进行意图分类
+   - 将意图识别结果作为 trace 的 metadata 记录
+   - 使用 `@observe` 装饰器追踪意图识别过程
+   ```python
+   from langfuse import observe
+   
+   @observe(name="intent-classification")
+   def classify_intent(user_input: str) -> str:
+       # 意图识别逻辑
+       return intent
+   ```
+
+2. **工具调用模块**
+   - 额外的工具在 custom_tool.md 中
+   - 使用 LangChain 的 `@tool` 装饰器定义工具
+   - 确保工具函数有清晰的文档字符串（用于 LLM 理解）
+   - 使用 `@observe` 装饰器追踪工具执行
+   - **注意**：装饰器顺序很重要，`@observe` 应该在 `@tool` 之前
+   ```python
+   from langchain.tools import tool
+   from langfuse import observe
+   
+   @observe(name="tool-execution")  # observe 在前
+   @tool  # tool 在后
+   def my_tool(param: str) -> str:
+       """工具描述，LLM 会根据此描述决定是否调用"""
+       # 工具逻辑
+       return result
+   ```
+
+3. **LLM 调用模块**
+   - 使用 Langfuse 的 `CallbackHandler` 自动追踪所有 LLM 调用
+   - 在 Agent 调用时传入 callback handler
+   ```python
+   from langfuse.langchain import CallbackHandler
+   
+   langfuse_handler = CallbackHandler()
+   agent.invoke(
+       input={"messages": [HumanMessage(content=query)]},
+       config={"callbacks": [langfuse_handler]}
+   )
+   ```
+
+### Agent 实现模式
+1. **使用 LangGraph 构建复杂 Agent**
+   - 对于多步骤、有状态的 Agent，优先使用 LangGraph
+   - 每个节点使用 `@observe` 装饰器或 context manager 追踪
+   - 使用 `CallbackHandler` 追踪整个 graph 执行
+   ```python
+   from langgraph.graph import StateGraph
+   from langfuse import observe, propagate_attributes
+   from langfuse.langchain import CallbackHandler
+   
+   # 初始化 handler
+   langfuse_handler = CallbackHandler()
+   
+   @observe(name="agent-node")
+   def agent_node(state: State):
+       with propagate_attributes(
+           user_id=state.get("user_id"),
+           session_id=state.get("session_id"),
+           tags=["agent-execution"]
+       ):
+           # Agent 逻辑
+           return {"messages": [response]}
+   
+   # Graph 调用时传入 handler
+   graph.invoke(
+       input={"messages": [HumanMessage(content=query)]},
+       config={"callbacks": [langfuse_handler]}
+   )
+   ```
+
+2. **使用 create_agent 构建简单 Agent**
+   - 对于简单的工具调用场景，使用 `create_agent`
+   - 支持多种模型：OpenAI、DeepSeek、Anthropic 等
+   
+   **使用 OpenAI 模型：**
+   ```python
+   from langchain.agents import create_agent
+   from langfuse.langchain import CallbackHandler
+   
+   langfuse_handler = CallbackHandler()
+   
+   agent = create_agent(
+       model="openai:gpt-4o",
+       tools=[tool1, tool2],
+       system_prompt="你是一个有用的助手"
+   )
+   
+   result = agent.invoke(
+       {"messages": [{"role": "user", "content": query}]},
+       config={"callbacks": [langfuse_handler]}
+   )
+   ```
+   
+   **使用 DeepSeek 模型：**
+   ```python
+   from langchain.agents import create_agent
+   from langchain_deepseek import ChatDeepSeek
+   from langfuse.langchain import CallbackHandler
+   import os
+   
+   # 设置 DeepSeek API Key
+   os.environ["DEEPSEEK_API_KEY"] = "sk-..."
+   
+   # 方式 1：使用模型字符串（如果支持）
+   agent = create_agent(
+       model="deepseek:deepseek-chat",  # 或 "deepseek-chat"
+       tools=[tool1, tool2],
+       system_prompt="你是一个有用的助手"
+   )
+   
+   # 方式 2：直接传入 ChatDeepSeek 实例（推荐）
+   llm = ChatDeepSeek(
+       model="deepseek-chat",  # 或 "deepseek-reasoner"
+       temperature=0.7,
+       max_tokens=2048
+   )
+   
+   agent = create_agent(
+       model=llm,  # 直接传入模型实例
+       tools=[tool1, tool2],
+       system_prompt="你是一个有用的助手"
+   )
+   
+   langfuse_handler = CallbackHandler()
+   result = agent.invoke(
+       {"messages": [{"role": "user", "content": query}]},
+       config={"callbacks": [langfuse_handler]}
+   )
+   ```
+   
+   **DeepSeek 模型说明：**
+   - `deepseek-chat`: 标准对话模型
+   - `deepseek-reasoner`: 推理增强模型（适合复杂任务）
+   - 需要安装：`pip install langchain-deepseek-official`
+   - API Key 获取：https://platform.deepseek.com/
+
+2. **Agent 调用时的追踪**
+   - 使用 context manager 创建根 trace
+   - 设置 trace 级别的属性（user_id, session_id, tags）
+   ```python
+   from langfuse import get_client, propagate_attributes
+   
+   langfuse = get_client()
+   
+   with langfuse.start_as_current_observation(
+       as_type="span",
+       name="agent-request",
+       input={"query": user_query}
+   ) as root_span:
+       with propagate_attributes(
+           user_id=user_id,
+           session_id=session_id,
+           tags=["production", "agent-v1"]
+       ):
+           result = agent.invoke(
+               {"messages": [HumanMessage(content=user_query)]},
+               config={"callbacks": [langfuse_handler]}
+           )
+       root_span.update_trace(output=result)
+   ```
+
+## Langfuse 集成规范
+
+### 初始化配置
+1. **环境变量设置**
+   ```python
+   import os
+   
+   # Langfuse 配置
+   os.environ["LANGFUSE_PUBLIC_KEY"] = "pk-lf-..."
+   os.environ["LANGFUSE_SECRET_KEY"] = "sk-lf-..."
+   os.environ["LANGFUSE_HOST"] = "https://cloud.langfuse.com"  # 或自托管地址
+   ```
+
+2. **客户端初始化**
+   ```python
+   from langfuse import get_client
+   
+   langfuse = get_client()
+   
+   # 验证连接
+   if langfuse.auth_check():
+       print("Langfuse 连接成功")
+   ```
+
+### 追踪最佳实践
+
+1. **使用 propagate_attributes 传播上下文**
+   - 在 Agent 入口处设置 user_id, session_id, tags
+   - 这些属性会自动传播到所有子观察（spans, generations）
+   ```python
+   from langfuse import propagate_attributes
+   
+   with propagate_attributes(
+       user_id="user_123",
+       session_id="session_abc",
+       metadata={"intent": "query", "source": "web"},
+       tags=["production", "agent-v1"],
+       version="1.0.0"
+   ):
+       # 所有在此上下文中创建的观察都会继承这些属性
+       agent.invoke(...)
+   ```
+
+2. **意图识别追踪**
+   - 将意图识别结果记录为 trace metadata
+   - 使用独立的 generation 记录意图识别 LLM 调用
+   - 支持多种模型（OpenAI、DeepSeek 等）
+   ```python
+   from langchain_openai import ChatOpenAI
+   # 或使用 DeepSeek
+   # from langchain_deepseek import ChatDeepSeek
+   
+   @observe(name="intent-classification", as_type="generation")
+   def classify_intent(user_input: str, langfuse_handler: CallbackHandler):
+       # 使用 OpenAI
+       llm = ChatOpenAI(model="gpt-4o-mini")
+       
+       # 或使用 DeepSeek（更经济）
+       # llm = ChatDeepSeek(model="deepseek-chat", temperature=0.3)
+       
+       prompt = ChatPromptTemplate.from_template(
+           "分类用户意图：{input}\n"
+           "可选意图：查询、操作、对话"
+       )
+       chain = prompt | llm
+       result = chain.invoke(
+           {"input": user_input},
+           config={"callbacks": [langfuse_handler]}
+       )
+       return result.content
+   ```
+
+3. **工具调用追踪**
+   - 工具函数使用 `@observe` 装饰器
+   - 记录工具输入、输出和执行时间
+   - **重要**：确保工具在 Agent 的 trace 上下文中执行
+   ```python
+   @observe(name="tool-{tool_name}")  # observe 在前
+   @tool  # tool 在后
+   def my_tool(param: str) -> dict:
+       """工具描述"""
+       # 工具逻辑
+       return {"result": "..."}
+   ```
+   
+   **工具调用上下文传播**：
+   - 如果工具在独立线程/进程中执行，需要手动传递 trace context
+   ```python
+   from langfuse import get_client
+   
+   langfuse = get_client()
+   current_trace_id = langfuse.get_current_trace_id()
+   current_obs_id = langfuse.get_current_observation_id()
+   
+   # 在工具函数中使用
+   @observe(
+       name="tool-execution",
+       langfuse_trace_id=current_trace_id,
+       langfuse_parent_observation_id=current_obs_id
+   )
+   def my_tool(param: str):
+       # 工具逻辑
+       pass
+   ```
+
+4. **错误处理和追踪**
+   - 捕获异常并更新 trace 状态
+   - 记录错误信息到 trace metadata
+   ```python
+   from langfuse import get_client
+   
+   langfuse = get_client()
+   
+   try:
+       result = agent.invoke(...)
+   except Exception as e:
+       langfuse.update_current_trace(
+           level="ERROR",
+           status_message=str(e),
+           metadata={"error_type": type(e).__name__}
+       )
+       raise
+   ```
+
+### Trace 属性设置
+
+1. **Trace 级别属性**（使用 `update_trace` 或 `propagate_attributes`）
+   - `user_id`: 用户标识
+   - `session_id`: 会话标识
+   - `tags`: 标签列表（用于过滤和分组）
+   - `metadata`: 自定义元数据
+   - `version`: 应用版本
+
+2. **Observation 级别属性**（使用 `update` 方法）
+   - `input`: 输入数据
+   - `output`: 输出数据
+   - `metadata`: 观察级别的元数据
+   - `level`: 严重程度（DEBUG, DEFAULT, WARNING, ERROR）
+
+### 评估和评分
+
+1. **用户反馈评分**
+   ```python
+   from langfuse import get_client
+   
+   langfuse = get_client()
+   
+   # 在 trace 上下文中
+   langfuse.score_current_trace(
+       name="user-feedback",
+       value=1,  # 1=正面, 0=负面
+       data_type="NUMERIC",
+       comment="用户反馈：回答准确"
+   )
+   ```
+
+2. **LLM-as-a-Judge 评估**
+   - 使用独立的 LLM 调用评估 Agent 输出
+   - 将评估结果记录为 score
+   ```python
+   @observe(name="llm-judge-evaluation", as_type="generation")
+   def evaluate_with_llm(agent_output: str, expected_output: str):
+       judge_llm = ChatOpenAI(model="gpt-4o-mini")
+       # 评估逻辑
+       score = judge_llm.invoke(...)
+       langfuse.score_current_trace(
+           name="correctness",
+           value=score,
+           data_type="NUMERIC"
+       )
+   ```
+
+## 代码组织规范
+
+### 目录结构
+```
+.
+├── agents/              # Agent 实现
+│   ├── __init__.py
+│   ├── base_agent.py    # 基础 Agent 类
+│   ├── intent_classifier.py  # 意图识别
+│   └── tools/           # 工具定义
+│       ├── __init__.py
+│       └── custom_tools.py
+├── monitoring/          # Langfuse 监控配置
+│   ├── __init__.py
+│   ├── langfuse_config.py  # Langfuse 初始化
+│   └── callbacks.py     # Callback handlers
+├── utils/               # 工具函数
+│   ├── __init__.py
+│   └── helpers.py
+└── main.py             # 入口文件
+```
+
+### 代码风格
+1. **函数命名**
+   - Agent 相关：`create_agent`, `run_agent`, `agent_node`
+   - 工具相关：`get_weather`, `search_database`, `calculate_sum`
+   - 监控相关：`setup_langfuse`, `create_trace`, `log_agent_step`
+
+2. **类型注解**
+   - 所有函数参数和返回值使用类型注解
+   - 使用 `TypedDict` 定义复杂状态结构
+
+3. **文档字符串**
+   - 所有公共函数和类必须有文档字符串
+   - 工具函数必须包含清晰的描述（LLM 会读取）
+
+## 性能优化
+
+1. **异步调用**
+   - 对于 I/O 密集型操作，使用异步版本
+   ```python
+   from langfuse import observe
+   
+   @observe()
+   async def async_agent_call(query: str):
+       result = await agent.ainvoke(...)
+       return result
+   ```
+
+2. **批量处理**
+   - 使用 `langfuse.flush()` 在批量操作后刷新
+   - 在短生命周期应用中，退出前调用 `langfuse.shutdown()`
+
+3. **采样率控制**
+   - 生产环境可设置采样率减少数据量
+   ```python
+   from langfuse import Langfuse
+   
+   langfuse = Langfuse(
+       sample_rate=0.1  # 只追踪 10% 的请求
+   )
+   ```
+
+## 测试和调试
+
+1. **本地测试**
+   - 使用 Langfuse 本地实例或开发环境
+   - 检查 trace 是否完整记录所有步骤
+
+2. **Trace 验证清单**
+   - [ ] 意图识别步骤被记录
+   - [ ] 所有工具调用被追踪
+   - [ ] LLM 调用包含完整的输入/输出
+   - [ ] 错误被正确捕获和记录
+   - [ ] user_id 和 session_id 正确传播
+
+3. **调试技巧**
+   - 使用 `langfuse.get_current_trace_id()` 获取当前 trace ID
+   - 在 Langfuse UI 中查看 trace 时间线
+   - 使用 metadata 记录调试信息
+
+## 安全注意事项
+
+1. **敏感信息**
+   - 不要在 trace 中记录密码、API keys 等敏感信息
+   - 使用 `metadata` 时注意数据脱敏
+
+2. **数据隐私**
+   - 遵守数据保护法规（如 GDPR）
+   - 考虑使用自托管 Langfuse 实例
+
+## 常见问题处理
+
+1. **Trace 不完整**
+   - 确保在所有 Agent 调用时传入 `langfuse_handler`
+   - 检查 OpenTelemetry 上下文是否正确传播
+
+2. **工具调用未追踪**
+   - 确保工具函数使用 `@observe` 装饰器
+   - 检查工具是否在正确的 trace 上下文中执行
+
+3. **意图识别未记录**
+   - 确保意图识别函数被 `@observe` 装饰
+   - 检查是否在 Agent 调用前执行意图识别
+
+## Prompt 管理
+
+1. **使用 Langfuse Prompt Management**
+   - 在 Langfuse UI 中管理 prompt 模板
+   - 版本控制和 A/B 测试
+   ```python
+   from langfuse import get_client
+   from langfuse.decorators import langfuse_context
+   
+   langfuse = get_client()
+   
+   # 从 Langfuse 获取 prompt
+   prompt = langfuse.get_prompt("intent-classification-prompt", label="production")
+   
+   # 在链中使用
+   chain = prompt | llm
+   ```
+
+2. **Prompt 版本追踪**
+   - 使用 `langfuse_prompt` 参数链接 prompt 到 generation
+   ```python
+   from langfuse.langchain import CallbackHandler
+   
+   handler = CallbackHandler()
+   
+   chain.invoke(
+       {"input": query},
+       config={
+           "callbacks": [handler],
+           "metadata": {
+               "langfuse_prompt": {
+                   "name": "intent-classification-prompt",
+                   "version": "v1.2"
+               }
+           }
+       }
+   )
+   ```
+
+## 数据集评估
+
+1. **创建评估数据集**
+   ```python
+   from langfuse import get_client
+   
+   langfuse = get_client()
+   
+   # 创建数据集
+   langfuse.create_dataset(
+       name="agent-evaluation-dataset",
+       description="Agent 评估测试集"
+   )
+   
+   # 添加数据项
+   langfuse.create_dataset_item(
+       dataset_name="agent-evaluation-dataset",
+       input={"query": "用户问题"},
+       expected_output={"answer": "期望答案"}
+   )
+   ```
+
+2. **运行数据集评估**
+   ```python
+   from langfuse import get_client
+   from langfuse.langchain import CallbackHandler
+   
+   langfuse = get_client()
+   handler = CallbackHandler()
+   
+   dataset = langfuse.get_dataset("agent-evaluation-dataset")
+   
+   for item in dataset.items:
+       with item.run(
+           run_name="agent-v1-evaluation",
+           run_metadata={"model": "gpt-4o", "version": "1.0"}
+       ) as root_span:
+           # 运行 Agent
+           result = agent.invoke(
+               {"messages": [HumanMessage(content=item.input["query"])]},
+               config={"callbacks": [handler]}
+           )
+           
+           # 可选：自动评分
+           root_span.score_trace(
+               name="correctness",
+               value=calculate_score(result, item.expected_output),
+               data_type="NUMERIC"
+           )
+   ```
+
+## 分布式追踪
+
+1. **跨服务追踪**
+   - 使用 `trace_context` 传递 trace ID
+   ```python
+   from langfuse import get_client, Langfuse
+   
+   langfuse = get_client()
+   
+   # 服务 A：生成 trace ID
+   external_request_id = "req_12345"
+   trace_id = Langfuse.create_trace_id(seed=external_request_id)
+   
+   # 服务 B：使用相同的 trace ID
+   with langfuse.start_as_current_observation(
+       as_type="span",
+       name="downstream-service",
+       trace_context={"trace_id": trace_id}
+   ) as span:
+       # 处理逻辑
+       pass
+   ```
+
+2. **HTTP 请求中的追踪**
+   - 使用 `as_baggage=True` 通过 HTTP headers 传播
+   ```python
+   from langfuse import propagate_attributes
+   import requests
+   
+   with propagate_attributes(
+       user_id="user_123",
+       session_id="session_abc",
+       as_baggage=True  # 通过 HTTP headers 传播
+   ):
+       response = requests.get("https://api.example.com/endpoint")
+   ```
+
+## 持续改进
+
+1. **监控指标**
+   - 定期检查 Langfuse 仪表板
+   - 关注错误率、延迟、成本趋势
+   - 使用自定义仪表板分析 Agent 性能
+
+2. **A/B 测试**
+   - 使用 `version` 和 `tags` 区分不同 Agent 版本
+   - 比较不同版本的性能指标
+   - 使用 Langfuse 的对比功能分析不同 prompt 版本
+
+3. **反馈循环**
+   - 收集用户反馈并记录为 scores
+   - 使用评估数据集进行离线测试
+   - 将生产中的问题案例添加到测试集
+   - 使用 LLM-as-a-Judge 进行自动化评估
+
+4. **成本优化**
+   - 监控每个步骤的 token 使用
+   - 识别高成本的工具调用或 LLM 调用
+   - 优化 prompt 长度和工具调用频率
+   - 使用缓存减少重复的 LLM 调用
+

@@ -1,0 +1,67 @@
+# Default values for langfuse-demo chart.
+
+replicaCount: 1
+
+image:
+  repository: registry.baidubce.com/cprom-stack-dev/langfuse-demo
+  tag: "2025120616"
+  pullPolicy: IfNotPresent
+  # imagePullSecrets: 
+  #   - name: bce-regcred
+
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: agent.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 1
+    memory: 1Gi
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Secret that carries LLM and Langfuse configs. All placed in Secret per request.
+secret:
+  create: true
+  name: ""
+  data:
+    # Langfuse
+    LANGFUSE_PUBLIC_KEY: ""
+    LANGFUSE_SECRET_KEY: ""
+    LANGFUSE_BASE_URL: "https://cloud.langfuse.com"
+    LANGFUSE_HOST: "https://cloud.langfuse.com"  # code reads LANGFUSE_HOST
+    LANGFUSE_TIMEOUT: "20"
+    LANGFUSE_TRACING_ENABLED: "true"
+
+    # Model / LLM
+    MODEL_TYPE: "deepseek"
+    MODEL_NAME: "deepseek-chat"
+    ENABLE_INTENT_CLASSIFICATION: "true"
+    OPENAI_API_KEY: ""
+    DEEPSEEK_API_KEY: ""
+
+    # Disable LangSmith tracing by default in containers
+    LANGCHAIN_TRACING_V2: "false"
+    LANGSMITH_TRACING: "false"

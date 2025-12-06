@@ -1,0 +1,5 @@
+.venv/
+.uv_cache/
+vendor/
+env.example
+charts/langfuse-demo/values-bj.yaml
